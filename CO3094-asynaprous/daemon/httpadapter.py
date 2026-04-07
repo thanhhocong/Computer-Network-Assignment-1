@@ -60,6 +60,48 @@ class HttpAdapter:
         self.request = Request()
         self.response = Response()
 
+    def _recv_full_request(self, conn):
+        """Reads a complete HTTP request from the socket.
+
+        HTTP requests can be larger than a single recv() buffer, so we:
+        1. Read until we find the header/body separator (\\r\\n\\r\\n)
+        2. Parse Content-Length from the headers
+        3. Keep reading until we have the full body
+        """
+        raw = conn.recv(65536)
+        if not raw:
+            return None
+
+        while b'\r\n\r\n' not in raw:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+
+        if b'\r\n\r\n' not in raw:
+            return raw.decode('utf-8', errors='ignore')
+
+        sep = raw.index(b'\r\n\r\n') + 4
+        header_bytes = raw[:sep]
+        body_so_far = raw[sep:]
+
+        content_length = 0
+        for line in header_bytes.decode('utf-8', errors='ignore').split('\r\n'):
+            if line.lower().startswith('content-length:'):
+                try:
+                    content_length = int(line.split(':', 1)[1].strip())
+                except ValueError:
+                    pass
+                break
+
+        while len(body_so_far) < content_length:
+            chunk = conn.recv(min(content_length - len(body_so_far), 65536))
+            if not chunk:
+                break
+            body_so_far += chunk
+
+        return (header_bytes + body_so_far).decode('utf-8', errors='ignore')
+
     def handle_client(self, conn, addr, routes):
         """Synchronous version -- used when mode is threading or callback.
 
@@ -75,7 +117,7 @@ class HttpAdapter:
         req = self.request
         resp = self.response
 
-        raw_msg = conn.recv(4096).decode('utf-8', errors='ignore')
+        raw_msg = self._recv_full_request(conn)
         if not raw_msg:
             conn.close()
             return
@@ -129,6 +171,48 @@ class HttpAdapter:
         conn.sendall(response_bytes)
         conn.close()
 
+    async def _read_full_request_async(self, reader):
+        """Reads a complete HTTP request from an asyncio StreamReader.
+
+        Same logic as the sync version but with await for non-blocking I/O.
+        Each connection gets its own coroutine, so multiple large requests
+        are handled concurrently without blocking each other.
+        """
+        raw = await reader.read(65536)
+        if not raw:
+            return None
+
+        while b'\r\n\r\n' not in raw:
+            chunk = await reader.read(65536)
+            if not chunk:
+                break
+            raw += chunk
+
+        if b'\r\n\r\n' not in raw:
+            return raw.decode('utf-8', errors='ignore')
+
+        sep = raw.index(b'\r\n\r\n') + 4
+        header_bytes = raw[:sep]
+        body_so_far = raw[sep:]
+
+        content_length = 0
+        for line in header_bytes.decode('utf-8', errors='ignore').split('\r\n'):
+            if line.lower().startswith('content-length:'):
+                try:
+                    content_length = int(line.split(':', 1)[1].strip())
+                except ValueError:
+                    pass
+                break
+
+        while len(body_so_far) < content_length:
+            remaining = content_length - len(body_so_far)
+            chunk = await reader.read(min(remaining, 65536))
+            if not chunk:
+                break
+            body_so_far += chunk
+
+        return (header_bytes + body_so_far).decode('utf-8', errors='ignore')
+
     async def handle_client_coroutine(self, reader, writer):
         """Async version -- used when mode is coroutine (asyncio).
 
@@ -140,11 +224,9 @@ class HttpAdapter:
         print("[HttpAdapter] New async connection from {}".format(addr))
 
         try:
-            data = await reader.read(4096)
-            if not data:
+            incoming_msg = await self._read_full_request_async(reader)
+            if not incoming_msg:
                 return
-
-            incoming_msg = data.decode('utf-8', errors='ignore')
 
             # Fresh Request/Response for each connection
             req = Request()

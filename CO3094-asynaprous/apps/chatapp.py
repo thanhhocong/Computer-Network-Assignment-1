@@ -282,7 +282,7 @@ def admin_route(headers, body):
         register_user_online(user)
         return "", 302, {
             "Location": "/chat.html",
-            "Set-Cookie": "session_token={}; Path=/; HttpOnly".format(token),
+            "Set-Cookie": "session_token={}; Path=/; HttpOnly; Max-Age=604800".format(token),
         }
 
     return "Unauthorized", 401, {
@@ -335,11 +335,11 @@ def login(headers, body):
                 "status": "ok",
                 "username": username,
                 "token": token,
-            }, 200, {"Set-Cookie": "session_token={}; Path=/".format(token)}
+            }, 200, {"Set-Cookie": "session_token={}; Path=/; Max-Age=604800".format(token)}
         else:
             return "Login successful", 302, {
                 "Location": "/chat.html",
-                "Set-Cookie": "session_token={}; Path=/; HttpOnly".format(token),
+                "Set-Cookie": "session_token={}; Path=/; HttpOnly; Max-Age=604800".format(token),
             }
 
     if 'application/json' in content_type:

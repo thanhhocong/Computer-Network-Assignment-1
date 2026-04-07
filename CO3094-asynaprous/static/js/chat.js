@@ -17,7 +17,7 @@ let chatHistoryCache = {};    // per-conversation cache: { keys: Set, ts: number
 let pollingInterval = null;
 let heartbeatInterval = null;
 let isLoadingMessages = false; // prevents double-loading from poll + manual load
-let sessionToken = null;      // per-tab auth token stored in sessionStorage
+let sessionToken = null;      // auth token persisted in localStorage across sessions
 
 const POLL_MS = 2000;          // check for new messages every 2 seconds
 const HEARTBEAT_MS = 30000;    // tell server we're still alive every 30s
@@ -104,7 +104,7 @@ async function apiPost(path, body) {
 // ======= Init =======
 
 async function init() {
-    sessionToken = sessionStorage.getItem('session_token');
+    sessionToken = localStorage.getItem('session_token');
 
     var me = await apiGet('/me');
     if (!me || me.error) { window.location.href = '/login'; return; }
@@ -112,7 +112,7 @@ async function init() {
 
     if (!sessionToken && me.token) {
         sessionToken = me.token;
-        sessionStorage.setItem('session_token', me.token);
+        localStorage.setItem('session_token', me.token);
     }
 
     document.getElementById('currentUserName').textContent = currentUser;
@@ -434,17 +434,11 @@ async function updateInfoPanel() {
 async function handleLogout() {
     currentUser = null;
     await apiPost('/logout', {});
-    sessionStorage.removeItem('session_token');
+    localStorage.removeItem('session_token');
     if (pollingInterval) clearInterval(pollingInterval);
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     window.location.href = '/login';
 }
-
-window.addEventListener('beforeunload', function() {
-    if (currentUser) {
-        navigator.sendBeacon('/logout');
-    }
-});
 
 // ======= Start =======
 document.addEventListener('DOMContentLoaded', init);
