@@ -43,7 +43,7 @@ if __name__ == "__main__":
     port = args.server_port
 
     print("=" * 60)
-    print("  BK-Messenger Chat Application")
+    print("  BK Discordmess Chat Application")
     print("  HCMC University of Technology (HCMUT)")
     print("  CO3094 - Computer Network - Assignment 1")
     print("=" * 60)

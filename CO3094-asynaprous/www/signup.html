@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BK Discordmess | Login</title>
+    <title>BK Discordmess | Sign Up</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -47,38 +47,25 @@
             100% { opacity: 1; }
         }
 
-        .login-wrapper {
+        .signup-wrapper {
             position: relative;
             z-index: 1;
             width: 100%;
-            max-width: 784px;
+            max-width: 480px;
             padding: 20px;
         }
 
-        .login-card {
+        .signup-card {
             background: #313338;
             border-radius: 5px;
             padding: 32px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-            display: flex;
-            gap: 32px;
         }
 
-        .login-form-section {
-            flex: 1;
-        }
-
-        .login-form-section h1 {
+        .signup-card h1 {
             color: #f2f3f5;
             font-size: 24px;
             font-weight: 600;
-            text-align: center;
-            margin-bottom: 8px;
-        }
-
-        .login-form-section .subtitle {
-            color: #b5bac1;
-            font-size: 16px;
             text-align: center;
             margin-bottom: 20px;
         }
@@ -111,24 +98,15 @@
             color: #dbdee1;
             font-size: 16px;
             outline: none;
-            transition: border-color 0.15s;
         }
 
-        .form-group input:focus {
-            outline: none;
+        .form-group .hint {
+            font-size: 12px;
+            color: #949ba4;
+            margin-top: 4px;
         }
 
-        .forgot-link {
-            display: block;
-            color: #00a8fc;
-            font-size: 14px;
-            text-decoration: none;
-            margin: -12px 0 20px;
-        }
-
-        .forgot-link:hover { text-decoration: underline; }
-
-        .btn-login {
+        .btn-signup {
             width: 100%;
             padding: 12px;
             background: #5865f2;
@@ -139,27 +117,48 @@
             font-weight: 500;
             cursor: pointer;
             transition: background 0.2s;
-            margin-bottom: 8px;
-        }
-
-        .btn-login:hover { background: #4752c4; }
-        .btn-login:active { background: #3c45a5; }
-
-        .register-link {
-            color: #949ba4;
-            font-size: 14px;
             margin-top: 4px;
         }
 
-        .register-link a {
+        .btn-signup:hover { background: #4752c4; }
+        .btn-signup:active { background: #3c45a5; }
+
+        .tos-text {
+            color: #949ba4;
+            font-size: 12px;
+            margin-top: 8px;
+            line-height: 1.4;
+        }
+
+        .tos-text a {
             color: #00a8fc;
             text-decoration: none;
         }
 
-        .register-link a:hover { text-decoration: underline; }
+        .tos-text a:hover { text-decoration: underline; }
+
+        .login-link {
+            color: #949ba4;
+            font-size: 14px;
+            margin-top: 16px;
+        }
+
+        .login-link a {
+            color: #00a8fc;
+            text-decoration: none;
+        }
+
+        .login-link a:hover { text-decoration: underline; }
 
         .error-msg {
             color: #f23f43;
+            font-size: 14px;
+            margin-top: 8px;
+            display: none;
+        }
+
+        .success-msg {
+            color: #23a559;
             font-size: 14px;
             margin-top: 8px;
             display: none;
@@ -170,117 +169,61 @@
             align-items: center;
             justify-content: center;
             gap: 10px;
-            margin-bottom: 20px;
+            margin-bottom: 16px;
         }
 
         .brand-section img {
-            width: 40px;
-            height: 40px;
+            width: 36px;
+            height: 36px;
             border-radius: 50%;
         }
 
         .brand-section .brand-text {
             color: #f2f3f5;
-            font-size: 18px;
+            font-size: 17px;
             font-weight: 700;
-        }
-
-        .divider {
-            text-align: center;
-            margin: 16px 0;
-            position: relative;
-            color: #949ba4;
-            font-size: 12px;
-            text-transform: uppercase;
-            font-weight: 600;
-        }
-
-        .divider::before, .divider::after {
-            content: '';
-            position: absolute;
-            top: 50%;
-            width: 40%;
-            height: 1px;
-            background: #4e5058;
-        }
-
-        .divider::before { left: 0; }
-        .divider::after { right: 0; }
-
-        .btn-admin {
-            width: 100%;
-            padding: 10px;
-            background: transparent;
-            color: #b5bac1;
-            border: 1px solid #4e5058;
-            border-radius: 3px;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .btn-admin:hover {
-            background: #4e505826;
-            border-color: #b5bac1;
-        }
-
-        .demo-hint {
-            background: #2b2d31;
-            border-radius: 5px;
-            padding: 12px 16px;
-            margin-top: 16px;
-            color: #b5bac1;
-            font-size: 13px;
-            text-align: center;
-        }
-
-        .demo-hint strong { color: #f2f3f5; }
-
-        @media (max-width: 600px) {
-            .login-card { padding: 24px 16px; }
         }
     </style>
 </head>
 <body>
     <div class="stars" id="stars"></div>
 
-    <div class="login-wrapper">
-        <div class="login-card">
-            <div class="login-form-section">
-                <div class="brand-section">
-                    <img src="/images/logo.png" alt="BK" onerror="this.style.display='none'">
-                    <span class="brand-text">BK Discordmess</span>
-                </div>
-
-                <h1>Welcome back!</h1>
-                <p class="subtitle">We're so excited to see you again!</p>
-
-                <form id="loginForm" onsubmit="return handleLogin(event)">
-                    <div class="form-group">
-                        <label>Username <span class="required">*</span></label>
-                        <input type="text" id="username" required autocomplete="username">
-                    </div>
-                    <div class="form-group">
-                        <label>Password <span class="required">*</span></label>
-                        <input type="password" id="password" required autocomplete="current-password">
-                    </div>
-                    <a href="#" class="forgot-link">Forgot your password?</a>
-                    <button type="submit" class="btn-login">Log In</button>
-                    <div class="error-msg" id="errorMsg"></div>
-                </form>
-
-                <p class="register-link">Need an account? <a href="/signup">Register</a></p>
-
-                <div class="divider">or</div>
-                <a href="/admin" style="text-decoration:none">
-                    <button type="button" class="btn-admin">Admin Login (Basic Auth)</button>
-                </a>
-
-                <div class="demo-hint">
-                    <strong>Demo:</strong> alice/alice123 &bull; bob/bob123 &bull; charlie/charlie123
-                </div>
+    <div class="signup-wrapper">
+        <div class="signup-card">
+            <div class="brand-section">
+                <img src="/images/logo.png" alt="BK" onerror="this.style.display='none'">
+                <span class="brand-text">BK Discordmess</span>
             </div>
+
+            <h1>Create an account</h1>
+
+            <form id="signupForm" onsubmit="return handleSignup(event)">
+                <div class="form-group">
+                    <label>Username <span class="required">*</span></label>
+                    <input type="text" id="username" required autocomplete="username" minlength="3">
+                </div>
+                <div class="form-group">
+                    <label>Display Name</label>
+                    <input type="text" id="display_name" autocomplete="name">
+                </div>
+                <div class="form-group">
+                    <label>Password <span class="required">*</span></label>
+                    <input type="password" id="password" required autocomplete="new-password" minlength="4">
+                </div>
+
+                <button type="submit" class="btn-signup">Continue</button>
+                <div class="error-msg" id="errorMsg"></div>
+                <div class="success-msg" id="successMsg"></div>
+            </form>
+
+            <p class="tos-text">
+                By registering, you agree to BK Discordmess's
+                <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.
+            </p>
+
+            <p class="login-link">
+                <a href="/login">Already have an account?</a>
+            </p>
         </div>
     </div>
 
@@ -297,25 +240,34 @@
         }
     })();
 
-    async function handleLogin(e) {
+    async function handleSignup(e) {
         e.preventDefault();
-        var username = document.getElementById('username').value;
+        var username = document.getElementById('username').value.trim();
+        var displayName = document.getElementById('display_name').value.trim();
         var password = document.getElementById('password').value;
         var errorMsg = document.getElementById('errorMsg');
+        var successMsg = document.getElementById('successMsg');
         errorMsg.style.display = 'none';
+        successMsg.style.display = 'none';
 
         try {
-            var resp = await fetch('/login', {
+            var resp = await fetch('/signup', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: username, password: password })
+                body: JSON.stringify({
+                    username: username,
+                    password: password,
+                    display_name: displayName || username
+                })
             });
             var data = await resp.json();
             if (resp.ok && data.status === 'ok') {
-                if (data.token) localStorage.setItem('session_token', data.token);
-                window.location.href = '/chat.html';
+                successMsg.textContent = 'Account created! Redirecting to login...';
+                successMsg.style.display = 'block';
+                document.getElementById('signupForm').reset();
+                setTimeout(function() { window.location.href = '/login'; }, 1500);
             } else {
-                errorMsg.textContent = data.error || 'Login or password is invalid.';
+                errorMsg.textContent = data.error || 'Failed to create account';
                 errorMsg.style.display = 'block';
             }
         } catch (err) {

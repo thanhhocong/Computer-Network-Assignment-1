@@ -37,20 +37,64 @@ app = AsynapRous()
 # assignment in-memory dicts are enough to demonstrate the concepts.
 # ---------------------------------------------------------------
 
-# Hardcoded users for demo -- in production you'd hash passwords
-USER_DB = {
-    "admin": "admin123",
-    "alice": "alice123",
-    "bob": "bob123",
-    "charlie": "charlie123",
-}
+ACCOUNTS_FILE = "accounts.json"
+
+
+def load_accounts():
+    """Load user accounts from accounts.json. Creates defaults if file is missing."""
+    try:
+        with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        default = {
+            "admin": {"password": "admin123", "display_name": "Admin", "role": "admin"},
+            "alice": {"password": "alice123", "display_name": "Alice", "role": "user"},
+            "bob": {"password": "bob123", "display_name": "Bob", "role": "user"},
+            "charlie": {"password": "charlie123", "display_name": "Charlie", "role": "user"},
+        }
+        save_accounts(default)
+        return default
+
+
+def save_accounts(accounts):
+    """Persist accounts dict to accounts.json."""
+    with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(accounts, f, indent=4, ensure_ascii=False)
+
+
+def verify_credentials(username, password):
+    """Check if username/password pair is valid."""
+    accounts = load_accounts()
+    user_data = accounts.get(username)
+    return user_data is not None and user_data.get('password') == password
+
+
+def get_user_role(username):
+    """Return 'admin' or 'user' for the given username."""
+    accounts = load_accounts()
+    return accounts.get(username, {}).get('role', 'user')
+
+
+def get_display_name(username):
+    """Return the display name for a user, falling back to username."""
+    accounts = load_accounts()
+    return accounts.get(username, {}).get('display_name', username)
 
 sessions = {}       # session_token -> {username, last_seen}
 peers = {}          # username -> {ip, port, peer_port, online, last_seen}
-channels = {        # Pre-created channels everyone joins by default
-    "General": {"members": set(), "messages": []},
-    "HCMUT-BK": {"members": set(), "messages": []},
+servers = {
+    "BK Discordmess": {
+        "members": set(),
+        "channels": {
+            "chung": {"messages": []},
+            "workspace": {"messages": []},
+            "lạc-đề": {"messages": []},
+        },
+    },
 }
+DEFAULT_SERVER = "BK Discordmess"
+DEFAULT_CHANNELS = ["chung", "workspace", "lạc-đề"]
+
 direct_messages = {}  # "alice:bob" (sorted) -> list of message dicts
 peer_connections = {} # who is connected to whom (for P2P tracking)
 notifications = {}    # username -> list of unread notification strings
@@ -131,11 +175,7 @@ def create_session(username):
 
 
 def register_user_online(username):
-    """Marks a user as online and adds them to the default channels.
-
-    Called right after a successful login so the user immediately
-    shows up in the peer list and can see General/HCMUT-BK channels.
-    """
+    """Marks a user as online and adds them to all servers."""
     if username not in peers:
         peers[username] = {
             'ip': '127.0.0.1',
@@ -148,8 +188,8 @@ def register_user_online(username):
         peers[username]['online'] = True
         peers[username]['last_seen'] = time.time()
 
-    for ch_name in channels:
-        channels[ch_name]['members'].add(username)
+    for srv_name, srv in servers.items():
+        srv['members'].add(username)
 
 
 def dm_key(user1, user2):
@@ -190,13 +230,12 @@ def check_stale_peers():
 
 
 async def forward_to_peer(target_username, data):
-    """Tries to deliver a message directly to another peer's server.
+    """Coroutine that delivers a message directly to another peer's server.
 
-    This is the P2P part: instead of just storing the message and waiting
-    for the other peer to poll, we open a TCP connection to their server
-    and push the message there via asyncio (non-blocking).
-    If their server is down or unreachable, the message is still stored
-    centrally as a fallback.
+    Uses asyncio.open_connection for non-blocking TCP I/O -- the event loop
+    can serve other clients while the write is in progress.  This is the
+    P2P part of the assignment: once peers know each other's addresses,
+    messages are pushed directly without waiting for polling.
     """
     peer_info = peers.get(target_username)
     if not peer_info or not peer_info.get('online'):
@@ -210,7 +249,7 @@ async def forward_to_peer(target_username, data):
 
     try:
         payload = json.dumps(data)
-        request = (
+        http_request = (
             "POST /receive-message HTTP/1.1\r\n"
             "Host: {}:{}\r\n"
             "Content-Type: application/json\r\n"
@@ -221,13 +260,22 @@ async def forward_to_peer(target_username, data):
         ).format(peer_ip, peer_port, len(payload.encode()), payload)
 
         reader, writer = await asyncio.open_connection(peer_ip, int(peer_port))
-        writer.write(request.encode())
+        writer.write(http_request.encode())
         await writer.drain()
         writer.close()
+        await writer.wait_closed()
         return True
     except Exception as e:
         print("[ChatApp] P2P forward to {} failed: {}".format(target_username, e))
         return False
+
+
+async def _safe_forward(target, msg):
+    """Fire-and-forget wrapper -- logs errors without crashing the event loop."""
+    try:
+        await forward_to_peer(target, msg)
+    except Exception as e:
+        print("[ChatApp] Background forward to {} error: {}".format(target, e))
 
 # ---------------------------------------------------------------
 # Page serving -- these routes return actual HTML pages
@@ -277,7 +325,7 @@ def admin_route(headers, body):
     auth_header = headers.get('authorization', '')
     user, pw = get_basic_auth_creds(auth_header)
 
-    if user and USER_DB.get(user) == pw:
+    if user and verify_credentials(user, pw):
         token = create_session(user)
         register_user_online(user)
         return "", 302, {
@@ -326,7 +374,7 @@ def login(headers, body):
     username = params.get('username', '')
     password = params.get('password', '')
 
-    if USER_DB.get(username) == password:
+    if verify_credentials(username, password):
         token = create_session(username)
         register_user_online(username)
 
@@ -346,6 +394,68 @@ def login(headers, body):
         return {"error": "Invalid credentials"}, 401, {}
     else:
         return "Invalid credentials", 401, {}
+
+@app.route('/signup', methods=['GET'])
+def signup_page(headers, body):
+    """Shows the signup form for creating a new account."""
+    user = get_session_user(headers)
+    if user:
+        return "", 302, {"Location": "/chat.html"}
+
+    try:
+        with open("www/signup.html", "r", encoding="utf-8") as f:
+            return f.read(), 200, {}
+    except Exception:
+        return {"error": "Signup page not found"}, 404, {}
+
+@app.route('/signup', methods=['POST'])
+def signup(headers, body):
+    """Creates a new user account and saves it to accounts.json.
+
+    New accounts always get the 'user' role -- only pre-seeded accounts
+    in accounts.json can have the 'admin' role.
+    """
+    content_type = headers.get('content-type', '')
+
+    if 'application/json' in content_type:
+        if isinstance(body, dict):
+            params = body
+        else:
+            try:
+                params = json.loads(body)
+            except Exception:
+                params = parse_form_body(body)
+    else:
+        params = parse_form_body(body)
+
+    username = params.get('username', '').strip()
+    password = params.get('password', '').strip()
+    display_name = params.get('display_name', '').strip() or username
+
+    if not username or not password:
+        return {"error": "Username and password are required"}, 400, {}
+
+    if len(username) < 3:
+        return {"error": "Username must be at least 3 characters"}, 400, {}
+
+    if len(password) < 4:
+        return {"error": "Password must be at least 4 characters"}, 400, {}
+
+    accounts = load_accounts()
+    if username in accounts:
+        return {"error": "Username already taken"}, 409, {}
+
+    email = params.get('email', '').strip()
+    accounts[username] = {
+        "password": password,
+        "display_name": display_name,
+        "email": email,
+        "role": "user",
+    }
+    save_accounts(accounts)
+
+    print("[ChatApp] New account registered: {} ({})".format(username, display_name))
+    return {"status": "ok", "message": "Account created successfully"}, 201, {}
 
 @app.route('/logout', methods=['POST'])
 def logout(headers, body):
@@ -435,6 +545,7 @@ def get_list(headers, body):
             "ip": info.get('ip', ''),
             "port": info.get('port', 0),
             "online": is_online,
+            "role": get_user_role(username),
         })
 
     return {
@@ -445,7 +556,7 @@ def get_list(headers, body):
 
 @app.route('/add-list', methods=['POST'])
 def add_list(headers, body):
-    """Adds a user to a channel. Creates the channel if it doesn't exist yet."""
+    """Adds a user to a server."""
     user = get_session_user(headers)
     if not user:
         return {"error": "Not authenticated"}, 401, {}
@@ -457,18 +568,19 @@ def add_list(headers, body):
     except Exception:
         data = {}
 
-    channel_name = data.get('channel', 'General')
+    server_name = data.get('server', DEFAULT_SERVER)
     target_user = data.get('username', user)
 
-    if channel_name not in channels:
-        channels[channel_name] = {"members": set(), "messages": []}
+    srv = servers.get(server_name)
+    if not srv:
+        return {"error": "Server not found"}, 404, {}
 
-    channels[channel_name]['members'].add(target_user)
+    srv['members'].add(target_user)
 
     return {
         "status": "ok",
-        "channel": channel_name,
-        "members": list(channels[channel_name]['members']),
+        "server": server_name,
+        "members": list(srv['members']),
     }, 200, {}
 
 # ---------------------------------------------------------------
@@ -528,14 +640,7 @@ def connect_peer(headers, body):
 
 @app.route('/broadcast-peer', methods=['POST'])
 async def broadcast_peer(headers, body):
-    """Sends a message to everyone in a channel (async/coroutine).
-
-    The message is stored in the channel's message list, and we also
-    try to push it directly to each member's server (P2P forwarding)
-    using asyncio.gather for concurrent non-blocking delivery.
-    Even if the P2P push fails, the message is still stored centrally
-    so it shows up when the other user polls for new messages.
-    """
+    """Sends a message to everyone in a server channel."""
     user = get_session_user(headers)
     if not user:
         return {"error": "Not authenticated"}, 401, {}
@@ -547,39 +652,38 @@ async def broadcast_peer(headers, body):
     except Exception:
         data = {}
 
-    channel = data.get('channel', 'General')
+    server_name = data.get('server', DEFAULT_SERVER)
+    channel_name = data.get('channel', '')
     message_text = data.get('message', '')
 
     if not message_text:
         return {"error": "Empty message"}, 400, {}
 
-    if channel not in channels:
+    srv = servers.get(server_name)
+    if not srv:
+        return {"error": "Server not found"}, 404, {}
+
+    ch = srv['channels'].get(channel_name)
+    if not ch:
         return {"error": "Channel not found"}, 404, {}
 
     msg = {
         "sender": user,
         "message": message_text,
-        "channel": channel,
+        "server": server_name,
+        "channel": channel_name,
         "timestamp": time.time(),
         "type": "channel",
     }
 
-    channels[channel]['messages'].append(msg)
+    ch['messages'].append(msg)
 
     forwarded_to = []
-    tasks = []
-    target_members = []
-    for member in channels[channel]['members']:
+    for member in srv['members']:
         if member != user:
-            add_notification(member, "New message in #{} from {}".format(channel, user))
-            tasks.append(forward_to_peer(member, msg))
-            target_members.append(member)
-
-    if tasks:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for member, success in zip(target_members, results):
-            if success is True:
-                forwarded_to.append(member)
+            add_notification(member, "New message in #{} from {}".format(channel_name, user))
+            asyncio.create_task(_safe_forward(member, msg))
+            forwarded_to.append(member)
 
     return {
         "status": "ok",
@@ -589,12 +693,12 @@ async def broadcast_peer(headers, body):
 
 @app.route('/send-peer', methods=['POST'])
 async def send_peer(headers, body):
-    """Sends a direct message to one specific peer (async/coroutine).
+    """Sends a direct message to one specific peer (coroutine).
 
-    This is the core P2P operation: alice sends "hi" to bob,
-    we store it in direct_messages under the key "alice:bob",
-    and also try to push it to bob's server in real-time
-    using non-blocking asyncio TCP connection.
+    The message is stored centrally first so it is immediately available
+    for polling, then a background asyncio task pushes it to the peer's
+    server via non-blocking TCP (asyncio.open_connection).  The HTTP
+    response returns without waiting for the P2P transfer to finish.
     """
     user = get_session_user(headers)
     if not user:
@@ -630,17 +734,13 @@ async def send_peer(headers, body):
     direct_messages[key].append(msg)
 
     add_notification(target, "New message from {}".format(user))
-    await forward_to_peer(target, msg)
+    asyncio.create_task(_safe_forward(target, msg))
 
     return {"status": "ok", "message": msg}, 200, {}
 
 @app.route('/receive-message', methods=['POST'])
 def receive_message(headers, body):
-    """Endpoint that other peer servers call to deliver messages to us.
-
-    When alice's server sends a message to bob, it POSTs to bob's
-    /receive-message. We just store it so bob sees it on his next poll.
-    """
+    """Endpoint that other peer servers call to deliver messages to us."""
     data = body if isinstance(body, dict) else {}
     try:
         if isinstance(body, str):
@@ -649,20 +749,32 @@ def receive_message(headers, body):
         data = {}
 
     msg_type = data.get('type', 'channel')
+    sender = data.get('sender', '')
+    ts = data.get('timestamp', 0)
 
     if msg_type == 'direct':
-        sender = data.get('sender', '')
         target = data.get('target', '')
         key = dm_key(sender, target)
         if key not in direct_messages:
             direct_messages[key] = []
-        if data not in direct_messages[key]:
+        is_dup = any(
+            m.get('timestamp') == ts and m.get('sender') == sender
+            for m in direct_messages[key]
+        )
+        if not is_dup:
             direct_messages[key].append(data)
     elif msg_type == 'channel':
-        channel = data.get('channel', '')
-        if channel in channels:
-            if data not in channels[channel]['messages']:
-                channels[channel]['messages'].append(data)
+        server_name = data.get('server', DEFAULT_SERVER)
+        channel_name = data.get('channel', '')
+        srv = servers.get(server_name)
+        if srv and channel_name in srv['channels']:
+            ch_msgs = srv['channels'][channel_name]['messages']
+            is_dup = any(
+                m.get('timestamp') == ts and m.get('sender') == sender
+                for m in ch_msgs
+            )
+            if not is_dup:
+                ch_msgs.append(data)
 
     return {"status": "ok"}, 200, {}
 
@@ -670,30 +782,31 @@ def receive_message(headers, body):
 # Channel management -- creating, listing, and fetching messages
 # ---------------------------------------------------------------
 
-@app.route('/channels', methods=['GET'])
-def list_channels(headers, body):
-    """Returns the channels the user is a member of, with last message preview."""
+@app.route('/servers', methods=['GET'])
+def list_servers(headers, body):
+    """Returns the servers the user is a member of, with channels."""
     user = get_session_user(headers)
     if not user:
         return {"error": "Not authenticated"}, 401, {}
 
-    ch_list = []
-    for name, info in channels.items():
+    srv_list = []
+    for name, info in servers.items():
         if user in info['members']:
-            last_msg = info['messages'][-1] if info['messages'] else None
-            ch_list.append({
+            ch_list = []
+            for ch_name, ch_data in info['channels'].items():
+                last_msg = ch_data['messages'][-1] if ch_data['messages'] else None
+                ch_list.append({"name": ch_name, "last_message": last_msg})
+            srv_list.append({
                 "name": name,
+                "channels": ch_list,
                 "member_count": len(info['members']),
-                "last_message": last_msg,
-                "unread": len([n for n in notifications.get(user, [])
-                              if name in n.get('message', '')]),
             })
 
-    return {"status": "ok", "channels": ch_list}, 200, {}
+    return {"status": "ok", "servers": srv_list}, 200, {}
 
-@app.route('/channels', methods=['POST'])
-def create_channel(headers, body):
-    """Creates a new channel. The creator is automatically added as a member."""
+@app.route('/servers', methods=['POST'])
+def create_server(headers, body):
+    """Creates a new server with default channels."""
     user = get_session_user(headers)
     if not user:
         return {"error": "Not authenticated"}, 401, {}
@@ -707,18 +820,53 @@ def create_channel(headers, body):
 
     name = data.get('name', '').strip()
     if not name:
-        return {"error": "Channel name required"}, 400, {}
+        return {"error": "Server name required"}, 400, {}
 
-    if name in channels:
-        return {"error": "Channel already exists"}, 400, {}
+    if name in servers:
+        return {"error": "Server already exists"}, 400, {}
 
-    channels[name] = {"members": {user}, "messages": []}
+    servers[name] = {
+        "members": {user},
+        "channels": {
+            "chung": {"messages": []},
+            "lạc-đề": {"messages": []},
+        },
+    }
 
-    return {
-        "status": "ok",
-        "channel": name,
-        "members": [user],
-    }, 200, {}
+    print("[ChatApp] Server '{}' created by {}".format(name, user))
+    return {"status": "ok", "server": name}, 200, {}
+
+@app.route('/server-channels', methods=['POST'])
+def create_server_channel(headers, body):
+    """Creates a new channel within a server."""
+    user = get_session_user(headers)
+    if not user:
+        return {"error": "Not authenticated"}, 401, {}
+
+    data = body if isinstance(body, dict) else {}
+    try:
+        if isinstance(body, str):
+            data = json.loads(body)
+    except Exception:
+        data = {}
+
+    server_name = data.get('server', '')
+    ch_name = data.get('name', '').strip()
+
+    if not server_name or not ch_name:
+        return {"error": "Server and channel name required"}, 400, {}
+
+    srv = servers.get(server_name)
+    if not srv:
+        return {"error": "Server not found"}, 404, {}
+
+    if ch_name in srv['channels']:
+        return {"error": "Channel already exists in this server"}, 400, {}
+
+    srv['channels'][ch_name] = {"messages": []}
+
+    print("[ChatApp] Channel #{} created in '{}' by {}".format(ch_name, server_name, user))
+    return {"status": "ok", "server": server_name, "channel": ch_name}, 200, {}
 
 @app.route('/messages', methods=['GET'])
 def get_messages(headers, body):
@@ -745,13 +893,7 @@ def get_messages(headers, body):
 
 @app.route('/messages', methods=['POST'])
 async def get_messages_post(headers, body):
-    """Fetches messages for a channel or DM, filtered by timestamp.
-
-    The client sends {"channel": "General", "since": 1234567890} and
-    we return only messages newer than that timestamp. This is how
-    the polling mechanism works -- the client remembers the last
-    timestamp it saw and only asks for what's new.
-    """
+    """Fetches messages for a server channel or DM, filtered by timestamp."""
     user = get_session_user(headers)
     if not user:
         return {"error": "Not authenticated"}, 401, {}
@@ -763,7 +905,8 @@ async def get_messages_post(headers, body):
     except Exception:
         data = {}
 
-    channel = data.get('channel', '')
+    server_name = data.get('server', '')
+    channel_name = data.get('channel', '')
     dm_target = data.get('dm', '')
     since = data.get('since', 0)
 
@@ -775,11 +918,12 @@ async def get_messages_post(headers, body):
         all_msgs = direct_messages.get(key, [])
         msgs = [m for m in all_msgs if m.get('timestamp', 0) > since]
         context_name = dm_target
-    elif channel:
-        ch = channels.get(channel, {})
+    elif server_name and channel_name:
+        srv = servers.get(server_name, {})
+        ch = srv.get('channels', {}).get(channel_name, {})
         all_msgs = ch.get('messages', [])
         msgs = [m for m in all_msgs if m.get('timestamp', 0) > since]
-        context_name = channel
+        context_name = channel_name
 
     return {
         "status": "ok",
@@ -842,17 +986,14 @@ def get_me(headers, body):
         "status": "ok",
         "username": user,
         "token": token,
+        "role": get_user_role(user),
+        "display_name": get_display_name(user),
         "peer_info": peers.get(user, {}),
     }, 200, {}
 
 @app.route('/conversations', methods=['GET'])
 async def get_conversations(headers, body):
-    """Returns ALL conversations (channels + DMs) in one list for the sidebar.
-
-    This is what makes our sidebar look like Messenger -- everything in
-    one feed, sorted by most recent message. Channels appear with a #
-    prefix, DMs show the other person's name and online status.
-    """
+    """Returns DM conversations for the sidebar."""
     user = get_session_user(headers)
     if not user:
         return {"error": "Not authenticated"}, 401, {}
@@ -861,20 +1002,6 @@ async def get_conversations(headers, body):
 
     convos = []
     now = time.time()
-
-    for name, info in channels.items():
-        if user in info['members']:
-            last_msg = info['messages'][-1] if info['messages'] else None
-            convos.append({
-                "id": "ch:" + name,
-                "type": "channel",
-                "name": name,
-                "display_name": "#" + name,
-                "last_message": last_msg,
-                "last_time": last_msg['timestamp'] if last_msg else 0,
-                "member_count": len(info['members']),
-                "online": True,
-            })
 
     seen_dm_peers = set()
     for key, msgs in direct_messages.items():
@@ -891,11 +1018,11 @@ async def get_conversations(headers, body):
             "id": "dm:" + other,
             "type": "dm",
             "name": other,
-            "display_name": other,
+            "display_name": get_display_name(other),
             "last_message": last_msg,
             "last_time": last_msg['timestamp'] if last_msg else 0,
-            "member_count": 2,
             "online": is_online,
+            "role": get_user_role(other),
         })
 
     for uname, info in peers.items():
@@ -907,16 +1034,146 @@ async def get_conversations(headers, body):
             "id": "dm:" + uname,
             "type": "dm",
             "name": uname,
-            "display_name": uname,
+            "display_name": get_display_name(uname),
             "last_message": None,
             "last_time": 0,
-            "member_count": 2,
             "online": is_online,
+            "role": get_user_role(uname),
         })
 
     convos.sort(key=lambda c: c['last_time'], reverse=True)
 
     return {"status": "ok", "conversations": convos}, 200, {}
+
+
+# ---------------------------------------------------------------
+# Admin-only routes -- privileged actions requiring admin role.
+# Regular users get a 403 Forbidden response.
+# ---------------------------------------------------------------
+
+@app.route('/admin/users', methods=['GET'])
+def admin_list_users(headers, body):
+    """Admin-only: list all registered accounts with online status."""
+    user = get_session_user(headers)
+    if not user or get_user_role(user) != 'admin':
+        return {"error": "Admin access required"}, 403, {}
+
+    accounts = load_accounts()
+    now = time.time()
+    users = []
+    for uname, data in accounts.items():
+        peer_info = peers.get(uname, {})
+        is_online = peer_info.get('online', False) and \
+            (now - peer_info.get('last_seen', 0) < 120)
+        users.append({
+            "username": uname,
+            "display_name": data.get('display_name', uname),
+            "role": data.get('role', 'user'),
+            "online": is_online,
+        })
+    return {"status": "ok", "users": users}, 200, {}
+
+@app.route('/admin/kick-user', methods=['POST'])
+def admin_kick_user(headers, body):
+    """Admin-only: force a user offline and invalidate their sessions."""
+    user = get_session_user(headers)
+    if not user or get_user_role(user) != 'admin':
+        return {"error": "Admin access required"}, 403, {}
+
+    data = body if isinstance(body, dict) else {}
+    try:
+        if isinstance(body, str):
+            data = json.loads(body)
+    except Exception:
+        data = {}
+
+    target = data.get('username', '')
+    if not target:
+        return {"error": "Username required"}, 400, {}
+    if target == user:
+        return {"error": "Cannot kick yourself"}, 400, {}
+
+    if target in peers:
+        peers[target]['online'] = False
+        notify_user_offline(target)
+
+    tokens_to_remove = [t for t, s in sessions.items() if s['username'] == target]
+    for t in tokens_to_remove:
+        sessions.pop(t, None)
+
+    print("[ChatApp] Admin {} kicked user {}".format(user, target))
+    return {"status": "ok", "message": "User {} kicked".format(target)}, 200, {}
+
+@app.route('/admin/delete-channel', methods=['POST'])
+def admin_delete_channel(headers, body):
+    """Admin-only: delete a non-default channel from a server."""
+    user = get_session_user(headers)
+    if not user or get_user_role(user) != 'admin':
+        return {"error": "Admin access required"}, 403, {}
+
+    data = body if isinstance(body, dict) else {}
+    try:
+        if isinstance(body, str):
+            data = json.loads(body)
+    except Exception:
+        data = {}
+
+    server_name = data.get('server', DEFAULT_SERVER)
+    channel_name = data.get('channel', '')
+    if not channel_name:
+        return {"error": "Channel name required"}, 400, {}
+
+    srv = servers.get(server_name)
+    if not srv:
+        return {"error": "Server not found"}, 404, {}
+
+    if server_name == DEFAULT_SERVER and channel_name in DEFAULT_CHANNELS:
+        return {"error": "Cannot delete default channels"}, 400, {}
+
+    if channel_name not in srv['channels']:
+        return {"error": "Channel not found"}, 404, {}
+
+    del srv['channels'][channel_name]
+    print("[ChatApp] Admin {} deleted #{} from '{}'".format(user, channel_name, server_name))
+    return {"status": "ok", "message": "Channel #{} deleted".format(channel_name)}, 200, {}
+
+@app.route('/admin/delete-account', methods=['POST'])
+def admin_delete_account(headers, body):
+    """Admin-only: permanently delete a user account."""
+    user = get_session_user(headers)
+    if not user or get_user_role(user) != 'admin':
+        return {"error": "Admin access required"}, 403, {}
+
+    data = body if isinstance(body, dict) else {}
+    try:
+        if isinstance(body, str):
+            data = json.loads(body)
+    except Exception:
+        data = {}
+
+    target = data.get('username', '')
+    if not target:
+        return {"error": "Username required"}, 400, {}
+    if target == user:
+        return {"error": "Cannot delete your own account"}, 400, {}
+
+    accounts = load_accounts()
+    if target not in accounts:
+        return {"error": "Account not found"}, 404, {}
+    if accounts[target].get('role') == 'admin':
+        return {"error": "Cannot delete another admin account"}, 400, {}
+
+    del accounts[target]
+    save_accounts(accounts)
+
+    if target in peers:
+        peers[target]['online'] = False
+    tokens_to_remove = [t for t, s in sessions.items() if s['username'] == target]
+    for t in tokens_to_remove:
+        sessions.pop(t, None)
+
+    print("[ChatApp] Admin {} deleted account {}".format(user, target))
+    return {"status": "ok", "message": "Account {} deleted".format(target)}, 200, {}
 
 
 def _register_trailing_slash_aliases():
