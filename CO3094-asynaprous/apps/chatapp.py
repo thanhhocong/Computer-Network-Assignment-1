@@ -99,6 +99,16 @@ direct_messages = {}  # "alice:bob" (sorted) -> list of message dicts
 peer_connections = {} # who is connected to whom (for P2P tracking)
 notifications = {}    # username -> list of unread notification strings
 
+
+def is_host_server(headers):
+    """Check if the request comes from the host server (127.0.0.1).
+
+    Used to differentiate admin behavior: on localhost the admin gets the
+    monitor dashboard, on LAN IP they chat like a normal user.
+    """
+    host = headers.get('host', '')
+    return host.startswith('127.0.0.1') or host.startswith('localhost')
+
 # ---------------------------------------------------------------
 # Helper functions used across multiple routes
 # ---------------------------------------------------------------
@@ -286,6 +296,8 @@ def serve_index(headers, body):
     """Root page: if you're logged in go to chat, otherwise show login form."""
     user = get_session_user(headers)
     if user:
+        if get_user_role(user) == 'admin' and is_host_server(headers):
+            return "", 302, {"Location": "/admin-monitor.html"}
         return "", 302, {"Location": "/chat.html"}
 
     try:
@@ -307,6 +319,23 @@ def serve_chat(headers, body):
     except Exception:
         return {"error": "Chat page not found"}, 404, {}
 
+@app.route('/admin-monitor.html', methods=['GET'])
+def serve_admin_monitor(headers, body):
+    """Admin conversation monitor. Only accessible to admins from localhost."""
+    user = get_session_user(headers)
+    if not user:
+        return "", 302, {"Location": "/login"}
+    if get_user_role(user) != 'admin':
+        return "", 302, {"Location": "/chat.html"}
+    if not is_host_server(headers):
+        return "", 302, {"Location": "/chat.html"}
+
+    try:
+        with open("www/admin-monitor.html", "r", encoding="utf-8") as f:
+            return f.read(), 200, {}
+    except Exception:
+        return {"error": "Admin monitor page not found"}, 404, {}
+
 # ---------------------------------------------------------------
 # Authentication -- two methods as required by the assignment:
 #   1) Basic Auth at /admin  (RFC 7235 -- browser popup)
@@ -321,6 +350,9 @@ def admin_route(headers, body):
     "WWW-Authenticate: Basic" header, which makes it show the
     built-in username/password popup. If credentials are correct,
     we create a session cookie and redirect to the chat page.
+
+    If the admin logs in from 127.0.0.1, redirect to the admin
+    monitor dashboard instead of the normal chat UI.
     """
     auth_header = headers.get('authorization', '')
     user, pw = get_basic_auth_creds(auth_header)
@@ -328,8 +360,12 @@ def admin_route(headers, body):
     if user and verify_credentials(user, pw):
         token = create_session(user)
         register_user_online(user)
+        # Admin from localhost -> monitor dashboard
+        redirect_to = "/chat.html"
+        if get_user_role(user) == 'admin' and is_host_server(headers):
+            redirect_to = "/admin-monitor.html"
         return "", 302, {
-            "Location": "/chat.html",
+            "Location": redirect_to,
             "Set-Cookie": "session_token={}; Path=/; HttpOnly; Max-Age=604800".format(token),
         }
 
@@ -342,6 +378,8 @@ def login_page(headers, body):
     """Shows the login form. If you're already logged in, skip to chat."""
     user = get_session_user(headers)
     if user:
+        if get_user_role(user) == 'admin' and is_host_server(headers):
+            return "", 302, {"Location": "/admin-monitor.html"}
         return "", 302, {"Location": "/chat.html"}
 
     try:
@@ -378,15 +416,22 @@ def login(headers, body):
         token = create_session(username)
         register_user_online(username)
 
+        # Determine redirect target: admin from localhost goes to monitor
+        is_admin_localhost = (get_user_role(username) == 'admin' and
+                             is_host_server(headers))
+        redirect_target = "/admin-monitor.html" if is_admin_localhost else "/chat.html"
+
         if 'application/json' in content_type:
             return {
                 "status": "ok",
                 "username": username,
                 "token": token,
+                "role": get_user_role(username),
+                "redirect": redirect_target,
             }, 200, {"Set-Cookie": "session_token={}; Path=/; Max-Age=604800".format(token)}
         else:
             return "Login successful", 302, {
-                "Location": "/chat.html",
+                "Location": redirect_target,
                 "Set-Cookie": "session_token={}; Path=/; HttpOnly; Max-Age=604800".format(token),
             }
 
@@ -1174,6 +1219,167 @@ def admin_delete_account(headers, body):
 
     print("[ChatApp] Admin {} deleted account {}".format(user, target))
     return {"status": "ok", "message": "Account {} deleted".format(target)}, 200, {}
+
+@app.route('/admin/all-conversations', methods=['GET'])
+def admin_all_conversations(headers, body):
+    """Admin-only: read all conversations (channels + DMs) on the server.
+
+    Only accessible from the host server (127.0.0.1). Returns all channel
+    messages and all direct message conversations so the admin can monitor
+    everything happening on the server.
+    """
+    user = get_session_user(headers)
+    if not user or get_user_role(user) != 'admin':
+        return {"error": "Admin access required"}, 403, {}
+
+    if not is_host_server(headers):
+        return {"error": "Only accessible from host server (127.0.0.1)"}, 403, {}
+
+    # Collect all channel messages from all servers
+    all_channels = []
+    for srv_name, srv in servers.items():
+        for ch_name, ch_data in srv['channels'].items():
+            all_channels.append({
+                "server": srv_name,
+                "channel": ch_name,
+                "messages": ch_data['messages'][-200:],
+                "count": len(ch_data['messages']),
+            })
+
+    # Collect all DM conversations
+    all_dms = []
+    for key, msgs in direct_messages.items():
+        parts = key.split(':')
+        all_dms.append({
+            "users": parts,
+            "key": key,
+            "messages": msgs[-200:],
+            "count": len(msgs),
+        })
+
+    # Collect all users with their online status
+    accounts = load_accounts()
+    now = time.time()
+    online_users = []
+    for uname, data in accounts.items():
+        peer_info = peers.get(uname, {})
+        is_online = peer_info.get('online', False) and \
+            (now - peer_info.get('last_seen', 0) < 120)
+        online_users.append({
+            "username": uname,
+            "display_name": data.get('display_name', uname),
+            "role": data.get('role', 'user'),
+            "online": is_online,
+            "ip": peer_info.get('ip', ''),
+            "port": peer_info.get('port', 0),
+            "last_seen": peer_info.get('last_seen', 0),
+        })
+
+    return {
+        "status": "ok",
+        "channels": all_channels,
+        "direct_messages": all_dms,
+        "users": online_users,
+    }, 200, {}
+
+@app.route('/admin/send-to-channel', methods=['POST'])
+async def admin_send_to_channel(headers, body):
+    """Admin-only: send a message to any channel from the monitor dashboard.
+
+    This allows the admin to participate in conversations while viewing
+    the monitor. Only accessible from the host server.
+    """
+    user = get_session_user(headers)
+    if not user or get_user_role(user) != 'admin':
+        return {"error": "Admin access required"}, 403, {}
+
+    if not is_host_server(headers):
+        return {"error": "Only accessible from host server"}, 403, {}
+
+    data = body if isinstance(body, dict) else {}
+    try:
+        if isinstance(body, str):
+            data = json.loads(body)
+    except Exception:
+        data = {}
+
+    server_name = data.get('server', DEFAULT_SERVER)
+    channel_name = data.get('channel', '')
+    message_text = data.get('message', '')
+
+    if not message_text or not channel_name:
+        return {"error": "Missing channel or message"}, 400, {}
+
+    srv = servers.get(server_name)
+    if not srv:
+        return {"error": "Server not found"}, 404, {}
+
+    ch = srv['channels'].get(channel_name)
+    if not ch:
+        return {"error": "Channel not found"}, 404, {}
+
+    msg = {
+        "sender": user,
+        "message": message_text,
+        "server": server_name,
+        "channel": channel_name,
+        "timestamp": time.time(),
+        "type": "channel",
+    }
+    ch['messages'].append(msg)
+
+    # Forward to all other online members
+    for member in srv['members']:
+        if member != user:
+            add_notification(member, "New message in #{} from {}".format(channel_name, user))
+            asyncio.create_task(_safe_forward(member, msg))
+
+    return {"status": "ok", "message": msg}, 200, {}
+
+@app.route('/admin/send-to-dm', methods=['POST'])
+async def admin_send_to_dm(headers, body):
+    """Admin-only: send a DM from the monitor dashboard.
+
+    The admin can send a direct message to any DM conversation visible
+    on the monitor. Only accessible from the host server.
+    """
+    user = get_session_user(headers)
+    if not user or get_user_role(user) != 'admin':
+        return {"error": "Admin access required"}, 403, {}
+
+    if not is_host_server(headers):
+        return {"error": "Only accessible from host server"}, 403, {}
+
+    data = body if isinstance(body, dict) else {}
+    try:
+        if isinstance(body, str):
+            data = json.loads(body)
+    except Exception:
+        data = {}
+
+    target = data.get('target', '')
+    message_text = data.get('message', '')
+
+    if not target or not message_text:
+        return {"error": "Missing target or message"}, 400, {}
+
+    msg = {
+        "sender": user,
+        "target": target,
+        "message": message_text,
+        "timestamp": time.time(),
+        "type": "direct",
+    }
+
+    key = dm_key(user, target)
+    if key not in direct_messages:
+        direct_messages[key] = []
+    direct_messages[key].append(msg)
+
+    add_notification(target, "New message from {}".format(user))
+    asyncio.create_task(_safe_forward(target, msg))
+
+    return {"status": "ok", "message": msg}, 200, {}
 
 
 def _register_trailing_slash_aliases():

@@ -313,7 +313,7 @@
             var data = await resp.json();
             if (resp.ok && data.status === 'ok') {
                 if (data.token) localStorage.setItem('session_token', data.token);
-                window.location.href = '/chat.html';
+                window.location.href = data.redirect || '/chat.html';
             } else {
                 errorMsg.textContent = data.error || 'Login or password is invalid.';
                 errorMsg.style.display = 'block';
